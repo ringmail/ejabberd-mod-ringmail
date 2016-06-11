@@ -27,18 +27,63 @@
 -module(mod_ringmail).
 -author('mfrager@dyl.com').
 
+-compile([{ejabberd_sql_pt}]).
+
 -behaviour(gen_mod).
 
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/1]).
+	 on_user_send_packet_to/4]).
 
 -define(PROCNAME, ?MODULE).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include("logger.hrl").
+-include("ejabberd_sql_pt.hrl").
+
+-record(state, {socket,
+		sockmod,
+		socket_monitor,
+		xml_socket,
+		streamid,
+		sasl_state,
+		access,
+		shaper,
+		zlib = false,
+		tls = false,
+		tls_required = false,
+		tls_enabled = false,
+		tls_options = [],
+		authenticated = false,
+		jid,
+		user = <<"">>, server = <<"">>, resource = <<"">>,
+		sid,
+		pres_t,
+		pres_f,
+		pres_a,
+		pres_last,
+		pres_timestamp,
+		privacy_list,
+		conn = unknown,
+		auth_module = unknown,
+		ip,
+		aux_fields = [],
+		csi_state = active,
+		csi_queue = [],
+		mgmt_state,
+		mgmt_xmlns,
+		mgmt_queue,
+		mgmt_max_queue,
+		mgmt_pending_since,
+		mgmt_timeout,
+		mgmt_max_timeout,
+		mgmt_resend,
+		mgmt_stanzas_in = 0,
+		mgmt_stanzas_out = 0,
+		ask_offline = true,
+		lang = <<"">>}).
 
 start(Host, Opts) ->
     ?INFO_MSG("Starting mod_ringmail", [] ),
@@ -54,9 +99,13 @@ stop(Host) ->
     ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
     ok.
 
-on_user_send_packet_to(Rec) ->
-    ?INFO_MSG("Input: ~p", [Rec]),
-    To = element(3, Rec),
+on_user_send_packet_to(To, C2SState, From, OrigTo) ->
+    ?INFO_MSG("Input: ~p", [To]),
+%    ?INFO_MSG("State: ~p", [C2SState]),
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"select count(username) as val from users;">>]) of
+		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
+		Error -> ?ERROR_MSG("~p", [Error]), []
+	end,
+    ?INFO_MSG("Query: ~p", [Q]),
 	To.
-
 
