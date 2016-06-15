@@ -100,12 +100,19 @@ stop(Host) ->
     ok.
 
 on_user_send_packet_to(To, C2SState, From, OrigTo) ->
-    ?INFO_MSG("Input: ~p", [To]),
+	ToParts = re:split(To, "\@", [{parts, 2}]),
+	ToCode = re:split(ToParts, "\%40", [{parts, 2}]),
+	ToString = lists:nth(1, ToCode),
+    ?INFO_MSG("From: ~p -- To: ~p", [element(2, From), lists:nth(1, ToCode)]),
 %    ?INFO_MSG("State: ~p", [C2SState]),
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"select count(username) as val from users;">>]) of
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = '">>, ToString, <<"'">>]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
     ?INFO_MSG("Query: ~p", [Q]),
-	To.
+	NewTo = case lists:nth(1, ToParts) of
+		<<"+13103517094">> -> <<"mike%40dyl.com@staging.ringmail.com">>;
+		_ -> To
+    end,
+	NewTo.
 
