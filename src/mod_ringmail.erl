@@ -34,7 +34,8 @@
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/3]).
+	 on_user_send_packet_to/3
+]).
 
 -define(PROCNAME, ?MODULE).
 
@@ -103,38 +104,65 @@ on_user_send_packet_to(To, From, C2SState) ->
 	ToParts = re:split(To, "\@", [{parts, 2}]),
 	ToItem = lists:nth(1, ToParts),
 	ToHost = lists:nth(2, ToParts),
+	MatchSlash = "/",
+	ToHostFinal = case re:run(ToHost, MatchSlash) of
+		{match, Captured1} ->
+			ToHostList = re:split(ToHost, "/", [{parts, 2}]),
+			lists:nth(1, ToHostList);
+		nomatch ->
+			ToHost
+	end,
     ?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
 	MatchAt = "\%40",
-	{NewTo, ReplyCode} = case re:run(ToItem, MatchAt) of
-		{match, Captured} ->
+	ReplyDomain = <<"c.ring.ml">>,
+	{NewTo, ReplyAddr} = case re:run(ToItem, MatchAt) of
+		{match, Captured2} ->
 			ToCode = re:split(ToItem, "\%40", [{parts, 2}]),
 			ToUser = lists:nth(1, ToCode),
 			ToDomain = lists:nth(2, ToCode),
 			case ToDomain of 
-				<<"c.ring.ml">> -> 
+				ReplyDomain -> 
 					% reply of reply :)
-					{get_user_from_code(C2SState, ToUser), "<<reply>>"};
+    				?INFO_MSG("To Reply Code: ~p", [ToUser]),
+					{get_user_from_code(C2SState, ToUser), get_target_from_reply_code(C2SState, ToUser, From)};
 				_ ->
 					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
 					Reply = lists:nth(2, Codes),
-					{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply}
+					{get_user_from_code(C2SState, lists:nth(1, Codes)), bjoin([Reply, <<"%40">>, ReplyDomain])}
 			end;
 		nomatch -> 
 			Codes = get_codes_from_target(C2SState, From, ToItem),
 			Reply = lists:nth(2, Codes),
-			{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply}
+			{get_user_from_code(C2SState, lists:nth(1, Codes)), bjoin([Reply, <<"%40">>, ReplyDomain])}
 	end,
-	FinalTo = bjoin([NewTo, <<"@">>, ToHost]),
-    ?INFO_MSG("NewTo: ~p Reply: ~p", [FinalTo, ReplyCode]),
-	%{FinalTo, jid:from_string(bjoin([ReplyCode, <<"%40m.dyl.com@">>, ToHost]))}.
-	{FinalTo, From}.
+	FinalTo = bjoin([NewTo, <<"@">>, ToHostFinal]),
+    ?INFO_MSG("NewTo: ~p Reply: ~p", [FinalTo, ReplyAddr]),
+	%{FinalTo, From}.
+	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal]))}.
+
+get_target_from_reply_code(C2SState, ReplyCode, From) ->
+	FromItem = element(2, From),
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT (SELECT CONCAT('+', d.did_code, d.did_number) FROM ringmail_staging.ring_did d WHERE d.id=t.did_id) AS phone, (SELECT REPLACE(e.email, '@', '%40') FROM ringmail_staging.ring_email e WHERE e.id=t.email_id) AS email FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c, ringmail_staging.ring_target t WHERE c.conversation_code = ">>, quote(ReplyCode), <<" AND u.login = REPLACE(">>, quote(FromItem), <<", '%40', '@') AND u.id = c.from_user_id AND t.id = c.to_user_target_id AND t.user_id = c.from_user_id">>]) of 
+		{selected, [<<"phone">>, <<"email">>], Rs} when is_list(Rs) -> Rs;
+		Error -> ?ERROR_MSG("~p", [Error]), []
+    end,
+    ?INFO_MSG("Get Original Target: ~p", [Q]),
+	if
+		length(Q) > 0 -> 
+			case lists:nth(1, Q) of 
+				[null, Email] -> Email;
+				[Phone, null] -> Phone
+			end;
+		true ->
+			<<"error">>
+	end.
 
 get_user_from_code(C2SState, ToCode) -> 
 	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
-    %?INFO_MSG("Get User From Code: ~p", [Q]),
+    ?INFO_MSG("Get To User By Code: ~p", [Q]),
 	lists:nth(1, lists:nth(1, Q)).
 
 get_codes_from_target(C2SState, From, Target) ->
