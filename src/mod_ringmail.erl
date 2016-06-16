@@ -34,7 +34,7 @@
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/4]).
+	 on_user_send_packet_to/3]).
 
 -define(PROCNAME, ?MODULE).
 
@@ -99,31 +99,35 @@ stop(Host) ->
     ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
     ok.
 
-on_user_send_packet_to(To, C2SState, From, OrigTo) ->
+on_user_send_packet_to(To, From, C2SState) ->
 	ToParts = re:split(To, "\@", [{parts, 2}]),
 	ToItem = lists:nth(1, ToParts),
 	ToHost = lists:nth(2, ToParts),
     ?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
 	MatchAt = "\%40",
-	NewTo = case re:run(ToItem, MatchAt) of
+	{NewTo, ReplyCode} = case re:run(ToItem, MatchAt) of
 		{match, Captured} ->
 			ToCode = re:split(ToItem, "\%40", [{parts, 2}]),
 			ToUser = lists:nth(1, ToCode),
 			ToDomain = lists:nth(2, ToCode),
 			case ToDomain of 
 				<<"c.ring.ml">> -> 
-					get_user_from_code(C2SState, ToUser);
+					% reply of reply :)
+					{get_user_from_code(C2SState, ToUser), "<<reply>>"};
 				_ ->
 					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
-					get_user_from_code(C2SState, lists:nth(1, Codes))
+					Reply = lists:nth(2, Codes),
+					{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply}
 			end;
 		nomatch -> 
 			Codes = get_codes_from_target(C2SState, From, ToItem),
-			get_user_from_code(C2SState, lists:nth(1, Codes))
+			Reply = lists:nth(2, Codes),
+			{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply}
 	end,
 	FinalTo = bjoin([NewTo, <<"@">>, ToHost]),
-    ?INFO_MSG("NewTo: ~p", [FinalTo]),
-	FinalTo.
+    ?INFO_MSG("NewTo: ~p Reply: ~p", [FinalTo, ReplyCode]),
+	%{FinalTo, jid:from_string(bjoin([ReplyCode, <<"%40m.dyl.com@">>, ToHost]))}.
+	{FinalTo, From}.
 
 get_user_from_code(C2SState, ToCode) -> 
 	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
