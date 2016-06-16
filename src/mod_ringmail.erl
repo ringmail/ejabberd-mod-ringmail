@@ -101,18 +101,148 @@ stop(Host) ->
 
 on_user_send_packet_to(To, C2SState, From, OrigTo) ->
 	ToParts = re:split(To, "\@", [{parts, 2}]),
-	ToCode = re:split(ToParts, "\%40", [{parts, 2}]),
-	ToString = lists:nth(1, ToCode),
-    ?INFO_MSG("From: ~p -- To: ~p", [element(2, From), lists:nth(1, ToCode)]),
-%    ?INFO_MSG("State: ~p", [C2SState]),
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = '">>, ToString, <<"'">>]) of
+	ToItem = lists:nth(1, ToParts),
+	ToHost = lists:nth(2, ToParts),
+    ?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
+	MatchAt = "\%40",
+	NewTo = case re:run(ToItem, MatchAt) of
+		{match, Captured} ->
+			ToCode = re:split(ToItem, "\%40", [{parts, 2}]),
+			ToUser = lists:nth(1, ToCode),
+			ToDomain = lists:nth(2, ToCode),
+			case ToDomain of 
+				<<"c.ring.ml">> -> 
+					get_user_from_code(C2SState, ToUser);
+				_ ->
+					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
+					get_user_from_code(C2SState, lists:nth(1, Codes))
+			end;
+		nomatch -> 
+			Codes = get_codes_from_target(C2SState, From, ToItem),
+			get_user_from_code(C2SState, lists:nth(1, Codes))
+	end,
+	FinalTo = bjoin([NewTo, <<"@">>, ToHost]),
+    ?INFO_MSG("NewTo: ~p", [FinalTo]),
+	FinalTo.
+
+get_user_from_code(C2SState, ToCode) -> 
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
-    ?INFO_MSG("Query: ~p", [Q]),
-	NewTo = case lists:nth(1, ToParts) of
-		<<"+13103517094">> -> <<"mike%40dyl.com@staging.ringmail.com">>;
-		_ -> To
-    end,
-	NewTo.
+    %?INFO_MSG("Get User From Code: ~p", [Q]),
+	lists:nth(1, lists:nth(1, Q)).
+
+get_codes_from_target(C2SState, From, Target) ->
+	FromItem = element(2, From),
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT conversation_code AS val, reply_code AS val2 FROM conversation WHERE username = ">>, quote(FromItem), <<" AND target_hash = UNHEX(SHA2(">>, quote(Target), <<", 256))">>]) of
+		{selected, [<<"val">>, <<"val2">>], Rs} when is_list(Rs) -> Rs;
+		Error -> ?ERROR_MSG("~p", [Error]), []
+	end,
+	Codes = if
+		length(Q) > 0 -> 
+			lists:nth(1, Q);
+		true ->
+			request_codes_for_target(C2SState, FromItem, Target)
+	end,
+    ?INFO_MSG("Get Code From Target: ~p", [Codes]),
+	Codes.
+
+request_codes_for_target(C2SState, FromItem, Target) ->
+	PostUrl = gen_mod:get_module_opt(C2SState#state.server, ?MODULE, conversation_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
+    Sep = "&",
+	Post = [
+	  "login=", url_encode(binary_to_list(FromItem)), Sep,
+	  "to=", url_encode(binary_to_list(Target))
+	],
+	%?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
+	R = httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
+	Codes = case R of
+		{ok, {{Version,ReturnCode, State}, Head, Body}} -> 
+			jiffy:decode(Body);
+		{error, Reason} -> 
+			[<<"error">>, <<"error">>]
+	end,
+% store code
+	case Codes of 
+		[<<"error">>, <<"error">>] -> ok;
+		[<<"notfound">>, <<"notfound">>] -> ok;
+		_ -> 
+			store_codes_for_target(C2SState, FromItem, Target, Codes)
+	end,
+	Codes.
+
+store_codes_for_target(C2SState, FromItem, Target, Codes) ->
+	?INFO_MSG("Store Code \"~p\"", [Codes]),
+	ejabberd_sql:sql_query(C2SState#state.server, [<<"INSERT INTO conversation (username, target_hash, conversation_code, reply_code) VALUES (">>, quote(FromItem), <<", UNHEX(SHA2(">>, quote(Target), <<", 256)), ">>, quote(lists:nth(1, Codes)), <<", ">>, quote(lists:nth(2, Codes)), <<")">>]).
+	
+bjoin(List) ->
+	F = fun(A, B) -> <<A/binary, B/binary>> end,
+	lists:foldr(F, <<>>, List).
+
+quote(String) when is_list(String) ->
+    [39 | lists:reverse([39 | quote(String, [])])]; %% 39 is $'
+quote(Bin) when is_binary(Bin) ->
+    list_to_binary(quote(binary_to_list(Bin))).
+
+quote([], Acc) ->
+    Acc;
+quote([0 | Rest], Acc) ->
+    quote(Rest, [$0, $\\ | Acc]);
+quote([10 | Rest], Acc) ->
+    quote(Rest, [$n, $\\ | Acc]);
+quote([13 | Rest], Acc) ->
+    quote(Rest, [$r, $\\ | Acc]);
+quote([$\\ | Rest], Acc) ->
+    quote(Rest, [$\\ , $\\ | Acc]);
+quote([39 | Rest], Acc) ->        %% 39 is $'
+    quote(Rest, [39, $\\ | Acc]); %% 39 is $'
+quote([34 | Rest], Acc) ->        %% 34 is $"
+    quote(Rest, [34, $\\ | Acc]); %% 34 is $"
+quote([26 | Rest], Acc) ->
+    quote(Rest, [$Z, $\\ | Acc]);
+quote([C | Rest], Acc) ->
+    quote(Rest, [C | Acc]).
+
+%%% The following url encoding code is from the yaws project and retains it's original license.
+%%% https://github.com/klacke/yaws/blob/master/LICENSE
+%%% Copyright (c) 2006, Claes Wikstrom, klacke@hyber.org
+%%% All rights reserved.
+url_encode([H|T]) when is_list(H) ->
+    [url_encode(H) | url_encode(T)];
+url_encode([H|T]) ->
+    if
+        H >= $a, $z >= H ->
+            [H|url_encode(T)];
+        H >= $A, $Z >= H ->
+            [H|url_encode(T)];
+        H >= $0, $9 >= H ->
+            [H|url_encode(T)];
+        H == $_; H == $.; H == $-; H == $/; H == $: -> % FIXME: more..
+            [H|url_encode(T)];
+        true ->
+            case integer_to_hex(H) of
+                [X, Y] ->
+                    [$%, X, Y | url_encode(T)];
+                [X] ->
+                    [$%, $0, X | url_encode(T)]
+            end
+     end;
+
+url_encode([]) ->
+    [].
+
+integer_to_hex(I) ->
+    case catch erlang:integer_to_list(I, 16) of
+        {'EXIT', _} -> old_integer_to_hex(I);
+        Int         -> Int
+    end.
+
+old_integer_to_hex(I) when I < 10 ->
+    integer_to_list(I);
+old_integer_to_hex(I) when I < 16 ->
+    [I-10+$A];
+old_integer_to_hex(I) when I >= 16 ->
+    N = trunc(I/16),
+    old_integer_to_hex(N) ++ old_integer_to_hex(I rem 16).
 
