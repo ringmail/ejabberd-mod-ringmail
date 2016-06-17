@@ -34,7 +34,7 @@
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/3
+	 on_user_send_packet_to/4
 ]).
 
 -define(PROCNAME, ?MODULE).
@@ -100,7 +100,8 @@ stop(Host) ->
     ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
     ok.
 
-on_user_send_packet_to(To, From, C2SState) ->
+on_user_send_packet_to(To, From, C2SState, Attrs) ->
+    %?INFO_MSG("Attrs: ~p", [Attrs]),
 	ToParts = re:split(To, "\@", [{parts, 2}]),
 	ToItem = lists:nth(1, ToParts),
 	ToHost = lists:nth(2, ToParts),
@@ -112,7 +113,20 @@ on_user_send_packet_to(To, From, C2SState) ->
 		nomatch ->
 			ToHost
 	end,
-    %?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
+	ReplyToCheck = proplists:get_value(<<"reply-to">>, Attrs, false),
+	ReplyTo = case ReplyToCheck of
+		false ->
+			false;
+		_ ->
+			%?INFO_MSG("Reply To: ~p", [ReplyToCheck]), 
+			case verify_target(C2SState, From, ReplyToCheck) of
+				true ->
+					ReplyToCheck;
+				false ->
+					false
+			end
+	end,
+	%?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
 	MatchAt = "\%40",
 	ReplyDomain = <<"c.ring.ml">>,
 	{NewTo, ReplyAddr, Contact} = case re:run(ToItem, MatchAt) of
@@ -122,23 +136,44 @@ on_user_send_packet_to(To, From, C2SState) ->
 			ToDomain = lists:nth(2, ToCode),
 			case ToDomain of 
 				ReplyDomain -> 
-					% reply of reply :)
-    				%?INFO_MSG("To Reply Code: ~p", [ToUser]),
+					% using reply code, always look up previous "to" target
 					{get_user_from_code(C2SState, ToUser), get_target_from_reply_code(C2SState, ToUser, From), get_contact_from_code(C2SState, ToUser)};
 				_ ->
 					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
-					Reply = lists:nth(2, Codes),
-					{get_user_from_code(C2SState, lists:nth(1, Codes)), bjoin([Reply, <<"%40">>, ReplyDomain]), get_contact_from_code(C2SState, lists:nth(1, Codes))}
+					%?INFO_MSG("Codes: ~p", [Codes]),
+					ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
+					Reply = case ReplyTo of
+						false -> 
+							case ReplyFromCode of
+								<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
+								Res -> Res
+							end;
+						_ ->
+							ReplyTo
+					end,
+					{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply, get_contact_from_code(C2SState, lists:nth(1, Codes))}
 			end;
 		nomatch -> 
 			Codes = get_codes_from_target(C2SState, From, ToItem),
-			Reply = lists:nth(2, Codes),
-			{get_user_from_code(C2SState, lists:nth(1, Codes)), bjoin([Reply, <<"%40">>, ReplyDomain]), get_contact_from_code(C2SState, lists:nth(1, Codes))}
+			Reply = case ReplyTo of
+				false -> 
+					ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
+					case ReplyFromCode of
+						<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
+						Res -> Res
+					end;
+				_ ->
+					ReplyTo
+			end,
+			{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply, get_contact_from_code(C2SState, lists:nth(1, Codes))}
 	end,
 	FinalTo = bjoin([NewTo, <<"@">>, ToHostFinal]),
-    ?INFO_MSG("From: ~p NewTo: ~p Reply: ~p", [element(2, From), FinalTo, ReplyAddr]),
+    ?INFO_MSG("Sender: ~p OrigTo: ~p To: ~p From: ~p Contact: ~p", [element(2, From), ToItem, NewTo, ReplyAddr, Contact]),
 	%{FinalTo, From}.
 	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal]))}.
+
+verify_target(C2SState, From, ReplyAddr) ->
+	true.
 
 get_target_from_reply_code(C2SState, ReplyCode, From) ->
 	FromItem = element(2, From),
@@ -162,7 +197,7 @@ get_contact_from_code(C2SState, ToCode) ->
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
-    ?INFO_MSG("Get Contact By Code: ~p", [Q]),
+    %?INFO_MSG("Get Contact By Code: ~p", [Q]),
 	if
 		length(Q) > 0 -> 
 			lists:nth(1, lists:nth(1, Q));
