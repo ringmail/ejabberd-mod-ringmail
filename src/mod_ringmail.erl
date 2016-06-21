@@ -34,7 +34,8 @@
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/4
+	 on_user_send_packet_to/4,
+	 on_user_send_packet_update/2
 ]).
 
 -define(PROCNAME, ?MODULE).
@@ -93,11 +94,13 @@ start(Host, Opts) ->
 
 init(Host, _Opts) ->
     ejabberd_hooks:add(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
+    ejabberd_hooks:add(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
     ok.
 
 stop(Host) ->
     ?INFO_MSG("Stopping mod_ringmail", [] ),
     ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
+    ejabberd_hooks:delete(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
     ok.
 
 on_user_send_packet_to(To, From, C2SState, Attrs) ->
@@ -170,9 +173,19 @@ on_user_send_packet_to(To, From, C2SState, Attrs) ->
 	FinalTo = bjoin([NewTo, <<"@">>, ToHostFinal]),
     ?INFO_MSG("Sender: ~p OrigTo: ~p To: ~p From: ~p Contact: ~p", [element(2, From), ToItem, NewTo, ReplyAddr, Contact]),
 	%{FinalTo, From}.
-	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal]))}.
+	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal])), Contact}.
+
+on_user_send_packet_update(El, Contact) ->
+	case Contact of 
+		null -> El;
+		_ ->
+			List = lists:keystore(<<"contact-id">>, 1, El#xmlel.attrs, {<<"contact-id">>, Contact}),
+    		%?INFO_MSG("Contact Data: ~p", [List]),
+			NewEl = El#xmlel{attrs=List}
+	end.
 
 verify_target(C2SState, From, ReplyAddr) ->
+	%%% TODO: verify target
 	true.
 
 get_target_from_reply_code(C2SState, ReplyCode, From) ->
