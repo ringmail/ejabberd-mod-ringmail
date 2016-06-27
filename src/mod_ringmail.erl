@@ -190,7 +190,7 @@ verify_target(C2SState, From, ReplyAddr) ->
 
 get_target_from_reply_code(C2SState, ReplyCode, From) ->
 	FromItem = element(2, From),
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT (SELECT CONCAT('+', d.did_code, d.did_number) FROM ringmail_staging.ring_did d WHERE d.id=t.did_id) AS phone, (SELECT REPLACE(e.email, '@', '%40') FROM ringmail_staging.ring_email e WHERE e.id=t.email_id) AS email FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c, ringmail_staging.ring_target t WHERE c.conversation_code = ">>, quote(ReplyCode), <<" AND u.login = REPLACE(">>, quote(FromItem), <<", '%40', '@') AND u.id = c.from_user_id AND t.id = c.to_user_target_id AND t.user_id = c.from_user_id">>]) of 
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT (SELECT CONCAT('+', d.did_code, d.did_number) FROM ringmail.ring_did d WHERE d.id=t.did_id) AS phone, (SELECT REPLACE(e.email, '@', '%40') FROM ringmail.ring_email e WHERE e.id=t.email_id) AS email FROM ringmail.ring_user u, ringmail.ring_conversation c, ringmail.ring_target t WHERE c.conversation_code = ">>, quote(ReplyCode), <<" AND u.login = REPLACE(">>, quote(FromItem), <<", '%40', '@') AND u.id = c.from_user_id AND t.id = c.to_user_target_id AND t.user_id = c.from_user_id">>]) of 
 		{selected, [<<"phone">>, <<"email">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
     end,
@@ -206,7 +206,7 @@ get_target_from_reply_code(C2SState, ReplyCode, From) ->
 	end.
 
 get_contact_from_code(C2SState, ToCode) -> 
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT t.internal_id AS val FROM ringmail_staging.ring_conversation c, ringmail_staging.ring_contact t WHERE c.conversation_code = ">>, quote(ToCode), <<" AND t.user_id = c.to_user_id AND t.matched_user_id = c.from_user_id ORDER BY device_id DESC LIMIT 1">>]) of
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT t.internal_id AS val FROM ringmail.ring_conversation c, ringmail.ring_contact t WHERE c.conversation_code = ">>, quote(ToCode), <<" AND t.user_id = c.to_user_id AND t.matched_user_id = c.from_user_id ORDER BY device_id DESC LIMIT 1">>]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
@@ -219,7 +219,7 @@ get_contact_from_code(C2SState, ToCode) ->
 	end.
 
 get_user_from_code(C2SState, ToCode) -> 
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail_staging.ring_user u, ringmail_staging.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail.ring_user u, ringmail.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
