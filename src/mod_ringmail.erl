@@ -144,11 +144,13 @@ on_user_send_packet_to(To, From, C2SState, Attrs) ->
 				_ ->
 					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
 					%?INFO_MSG("Codes: ~p", [Codes]),
-					ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
 					Reply = case ReplyTo of
 						false -> 
+							ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
 							case ReplyFromCode of
-								<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
+								%<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
+ 								% TODO: Stop leak of main email
+								<<"error">> -> element(2, From);
 								Res -> Res
 							end;
 						_ ->
@@ -171,7 +173,7 @@ on_user_send_packet_to(To, From, C2SState, Attrs) ->
 			{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply, get_contact_from_code(C2SState, lists:nth(1, Codes))}
 	end,
 	FinalTo = bjoin([NewTo, <<"@">>, ToHostFinal]),
-    ?INFO_MSG("Sender: ~p OrigTo: ~p To: ~p From: ~p Contact: ~p", [element(2, From), ToItem, NewTo, ReplyAddr, Contact]),
+    ?INFO_MSG("OrigFrom: ~p OrigTo: ~p From: ~p -> To: ~p Reply-To: ~p Contact: ~p", [element(2, From), ToItem, ReplyAddr, NewTo, ReplyTo, Contact]),
 	%{FinalTo, From}.
 	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal])), Contact}.
 
@@ -206,7 +208,8 @@ get_target_from_reply_code(C2SState, ReplyCode, From) ->
 	end.
 
 get_contact_from_code(C2SState, ToCode) -> 
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT t.internal_id AS val FROM ringmail.ring_conversation c, ringmail.ring_contact t WHERE c.conversation_code = ">>, quote(ToCode), <<" AND t.user_id = c.to_user_id AND t.matched_user_id = c.from_user_id ORDER BY device_id DESC LIMIT 1">>]) of
+	% Only use the latest Device ID for receiving user
+	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT t.internal_id AS val FROM ringmail.ring_conversation c, ringmail.ring_contact t WHERE c.conversation_code = ">>, quote(ToCode), <<" AND t.user_id = c.to_user_id AND t.device_id = (SELECT d.id FROM ringmail.ring_device d WHERE d.user_id=c.to_user_id ORDER BY d.id DESC LIMIT 1) AND t.matched_user_id = c.from_user_id ORDER BY device_id DESC LIMIT 1">>]) of
 		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
 		Error -> ?ERROR_MSG("~p", [Error]), []
 	end,
