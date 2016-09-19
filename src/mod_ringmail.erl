@@ -106,7 +106,7 @@ stop(Host) ->
 on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
     %?INFO_MSG("Attrs: ~p", [Attrs]),
     %?INFO_MSG("XML Element: ~p", [El]),
-    ?INFO_MSG("From: ~p", [From]),
+    %?INFO_MSG("From: ~p", [From]),
 	ToParts = re:split(To, "\@", [{parts, 2}]),
 	ToID = lists:nth(1, ToParts),
 	Host1 = lists:nth(2, ToParts),
@@ -125,8 +125,11 @@ on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
 	% read conversation uuid from sender
 	ConvID = proplists:get_value(<<"conversation">>, Attrs, <<"">>),
 
+	% read reply-to from sender
+	ReplyTo = proplists:get_value(<<"reply-to">>, Attrs, <<"">>),
+
 	% request conversation data
-	ConvData = request_conversation_data(C2SState, ConvID, FromID, ToID),
+	ConvData = request_conversation_data(C2SState, ConvID, FromID, ToID, ReplyTo),
     %?INFO_MSG("Conversation Data: ~p", [ConvData]),
 	ConvValid = lists:nth(1, ConvData),
 
@@ -155,7 +158,7 @@ on_user_send_packet_update(El, DataList) ->
 		null -> List1;
 		<<"">> -> List1;
 		_ ->
-			lists:keystore(<<"original-to">>, 1, List1, {<<"original-to">>, lists:nth(3, DataList)})
+			lists:keystore(<<"originalto">>, 1, List1, {<<"original-to">>, lists:nth(3, DataList)})
 	end,
 	El1 = El#xmlel{attrs=List2},
 	case Contact of 
@@ -167,13 +170,14 @@ on_user_send_packet_update(El, DataList) ->
 			NewEl = El1#xmlel{attrs=List}
 	end.
 
-request_conversation_data(C2SState, ConvID, FromID, ToID) ->
+request_conversation_data(C2SState, ConvID, FromID, ToID, ReplyTo) ->
 	PostUrl = gen_mod:get_module_opt(C2SState#state.server, ?MODULE, conversation_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
     Sep = "&",
 	Post = [
 	  "conv=", url_encode(binary_to_list(ConvID)), Sep,
 	  "from=", url_encode(binary_to_list(FromID)), Sep,
-	  "to=", url_encode(binary_to_list(ToID))
+	  "to=", url_encode(binary_to_list(ToID)), Sep,
+	  "reply=", url_encode(binary_to_list(ReplyTo))
 	],
 	%?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
 	R = httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
