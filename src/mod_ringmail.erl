@@ -34,7 +34,7 @@
 -export([start/2,
 	 init/2,
 	 stop/1,
-	 on_user_send_packet_to/4,
+	 on_user_send_packet_to/5,
 	 on_user_send_packet_update/2
 ]).
 
@@ -103,174 +103,87 @@ stop(Host) ->
     ejabberd_hooks:delete(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
     ok.
 
-on_user_send_packet_to(To, From, C2SState, Attrs) ->
+on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
     %?INFO_MSG("Attrs: ~p", [Attrs]),
+    %?INFO_MSG("XML Element: ~p", [El]),
+    ?INFO_MSG("From: ~p", [From]),
 	ToParts = re:split(To, "\@", [{parts, 2}]),
-	ToItem = lists:nth(1, ToParts),
-	ToHost = lists:nth(2, ToParts),
+	ToID = lists:nth(1, ToParts),
+	Host1 = lists:nth(2, ToParts),
+	FromID = element(2, From),
+
+	% decode host
 	MatchSlash = "/",
-	ToHostFinal = case re:run(ToHost, MatchSlash) of
+	Host = case re:run(Host1, MatchSlash) of
 		{match, Captured1} ->
-			ToHostList = re:split(ToHost, "/", [{parts, 2}]),
-			lists:nth(1, ToHostList);
+			Host2 = re:split(Host1, "/", [{parts, 2}]),
+			lists:nth(1, Host2);
 		nomatch ->
-			ToHost
+			Host1
 	end,
-	ReplyToCheck = proplists:get_value(<<"reply-to">>, Attrs, false),
-	ReplyTo = case ReplyToCheck of
-		false ->
-			false;
-		_ ->
-			%?INFO_MSG("Reply To: ~p", [ReplyToCheck]), 
-			case verify_target(C2SState, From, ReplyToCheck) of
-				true ->
-					ReplyToCheck;
-				false ->
-					false
-			end
-	end,
-	%?INFO_MSG("From: ~p -- To: ~p", [element(2, From), ToItem]),
-	MatchAt = "\%40",
-	ReplyDomain = <<"c.ring.ml">>,
-	{NewTo, ReplyAddr, Contact} = case re:run(ToItem, MatchAt) of
-		{match, Captured2} ->
-			ToCode = re:split(ToItem, "\%40", [{parts, 2}]),
-			ToUser = lists:nth(1, ToCode),
-			ToDomain = lists:nth(2, ToCode),
-			case ToDomain of 
-				ReplyDomain -> 
-					% using reply code, always look up previous "to" target
-					{get_user_from_code(C2SState, ToUser), get_target_from_reply_code(C2SState, ToUser, From), get_contact_from_code(C2SState, ToUser)};
-				_ ->
-					Codes = get_codes_from_target(C2SState, From, bjoin([ToUser, <<"@">>, ToDomain])),
-					%?INFO_MSG("Codes: ~p", [Codes]),
-					Reply = case ReplyTo of
-						false -> 
-							ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
-							case ReplyFromCode of
-								%<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
- 								% TODO: Stop leak of main email
-								<<"error">> -> element(2, From);
-								Res -> Res
-							end;
-						_ ->
-							ReplyTo
-					end,
-					{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply, get_contact_from_code(C2SState, lists:nth(1, Codes))}
-			end;
-		nomatch -> 
-			Codes = get_codes_from_target(C2SState, From, ToItem),
-			Reply = case ReplyTo of
-				false -> 
-					ReplyFromCode = get_target_from_reply_code(C2SState, lists:nth(1, Codes), From),
-					case ReplyFromCode of
-						<<"error">> -> bjoin([lists:nth(2, Codes), <<"%40">>, ReplyDomain]);
-						Res -> Res
-					end;
-				_ ->
-					ReplyTo
-			end,
-			{get_user_from_code(C2SState, lists:nth(1, Codes)), Reply, get_contact_from_code(C2SState, lists:nth(1, Codes))}
-	end,
-	FinalTo = bjoin([NewTo, <<"@">>, ToHostFinal]),
-    ?INFO_MSG("OrigFrom: ~p OrigTo: ~p From: ~p -> To: ~p Reply-To: ~p Contact: ~p", [element(2, From), ToItem, ReplyAddr, NewTo, ReplyTo, Contact]),
-	%{FinalTo, From}.
-	{FinalTo, jid:from_string(bjoin([ReplyAddr, <<"@">>, ToHostFinal])), Contact}.
 
-on_user_send_packet_update(El, Contact) ->
+	% read conversation uuid from sender
+	ConvID = proplists:get_value(<<"conversation">>, Attrs, <<"">>),
+
+	% request conversation data
+	ConvData = request_conversation_data(C2SState, ConvID, FromID, ToID),
+    %?INFO_MSG("Conversation Data: ~p", [ConvData]),
+	ConvValid = lists:nth(1, ConvData),
+
+	{ToFinal, FromConv, UUID, Contact, OrigTo} = case ConvValid of 
+        <<"ok">> -> {lists:nth(2, ConvData), lists:nth(3, ConvData), lists:nth(4, ConvData), lists:nth(5, ConvData), lists:nth(6, ConvData)};
+		_ -> {ToID, FromID, <<"">>, <<"">>, <<"">>}
+	end,
+
+	Receipt = case fxml:get_subtag(El, <<"received">>) of
+		false -> false;
+		Receipt1 -> true
+	end,
+	FromFinal = case Receipt of
+		true -> <<"receipts">>;
+		false -> FromConv
+	end,
+	DataList = [UUID, Contact, OrigTo],
+
+    ?INFO_MSG("Receipt:~p OrigFrom:~p OrigTo:~p NewFrom:~p -> NewTo:~p UUID:~p Contact:~p", [Receipt, FromID, ToID, FromFinal, ToFinal, lists:nth(1, DataList), lists:nth(2, DataList)]),
+	{bjoin([ToFinal, <<"@">>, Host]), jid:from_string(bjoin([FromFinal, <<"@">>, Host])), DataList}.
+
+on_user_send_packet_update(El, DataList) ->
+	Contact = lists:nth(2, DataList),
+	List1 = lists:keystore(<<"conversation">>, 1, El#xmlel.attrs, {<<"conversation">>, lists:nth(1, DataList)}),
+    List2 = case lists:nth(3, DataList) of
+		null -> List1;
+		<<"">> -> List1;
+		_ ->
+			lists:keystore(<<"original-to">>, 1, List1, {<<"original-to">>, lists:nth(3, DataList)})
+	end,
+	El1 = El#xmlel{attrs=List2},
 	case Contact of 
-		null -> El;
+		null -> El1;
+		<<"">> -> El1;
 		_ ->
-			List = lists:keystore(<<"contact-id">>, 1, El#xmlel.attrs, {<<"contact-id">>, Contact}),
+			List = lists:keystore(<<"contact">>, 1, El1#xmlel.attrs, {<<"contact">>, Contact}),
     		%?INFO_MSG("Contact Data: ~p", [List]),
-			NewEl = El#xmlel{attrs=List}
+			NewEl = El1#xmlel{attrs=List}
 	end.
 
-verify_target(C2SState, From, ReplyAddr) ->
-	%%% TODO: verify target
-	true.
-
-get_target_from_reply_code(C2SState, ReplyCode, From) ->
-	FromItem = element(2, From),
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT (SELECT CONCAT('+', d.did_code, d.did_number) FROM ringmail.ring_did d WHERE d.id=t.did_id) AS phone, (SELECT REPLACE(e.email, '@', '%40') FROM ringmail.ring_email e WHERE e.id=t.email_id) AS email FROM ringmail.ring_user u, ringmail.ring_conversation c, ringmail.ring_target t WHERE c.conversation_code = ">>, quote(ReplyCode), <<" AND u.login = REPLACE(">>, quote(FromItem), <<", '%40', '@') AND u.id = c.from_user_id AND t.id = c.to_user_target_id AND t.user_id = c.from_user_id">>]) of 
-		{selected, [<<"phone">>, <<"email">>], Rs} when is_list(Rs) -> Rs;
-		Error -> ?ERROR_MSG("~p", [Error]), []
-    end,
-    %?INFO_MSG("Get Original Target: ~p", [Q]),
-	if
-		length(Q) > 0 -> 
-			case lists:nth(1, Q) of 
-				[null, Email] -> Email;
-				[Phone, null] -> Phone
-			end;
-		true ->
-			<<"error">>
-	end.
-
-get_contact_from_code(C2SState, ToCode) -> 
-	% Only use the latest Device ID for receiving user
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT t.internal_id AS val FROM ringmail.ring_conversation c, ringmail.ring_contact t WHERE c.conversation_code = ">>, quote(ToCode), <<" AND t.user_id = c.to_user_id AND t.device_id = (SELECT d.id FROM ringmail.ring_device d WHERE d.user_id=c.to_user_id ORDER BY d.id DESC LIMIT 1) AND t.matched_user_id = c.from_user_id ORDER BY device_id DESC LIMIT 1">>]) of
-		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
-		Error -> ?ERROR_MSG("~p", [Error]), []
-	end,
-    %?INFO_MSG("Get Contact By Code: ~p", [Q]),
-	if
-		length(Q) > 0 -> 
-			lists:nth(1, lists:nth(1, Q));
-		true -> 
-			null
-	end.
-
-get_user_from_code(C2SState, ToCode) -> 
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT REPLACE(u.login, '@', '%40') AS val FROM ringmail.ring_user u, ringmail.ring_conversation c WHERE u.id = c.to_user_id AND c.conversation_code = ">>, quote(ToCode)]) of
-		{selected, [<<"val">>], Rs} when is_list(Rs) -> Rs;
-		Error -> ?ERROR_MSG("~p", [Error]), []
-	end,
-    %?INFO_MSG("Get To User By Code: ~p", [Q]),
-	lists:nth(1, lists:nth(1, Q)).
-
-get_codes_from_target(C2SState, From, Target) ->
-	FromItem = element(2, From),
-	Q = case catch ejabberd_sql:sql_query(C2SState#state.server, [<<"SELECT conversation_code AS val, reply_code AS val2 FROM conversation WHERE username = ">>, quote(FromItem), <<" AND target_hash = UNHEX(SHA2(">>, quote(Target), <<", 256))">>]) of
-		{selected, [<<"val">>, <<"val2">>], Rs} when is_list(Rs) -> Rs;
-		Error -> ?ERROR_MSG("~p", [Error]), []
-	end,
-	Codes = if
-		length(Q) > 0 -> 
-			lists:nth(1, Q);
-		true ->
-			request_codes_for_target(C2SState, FromItem, Target)
-	end,
-    %?INFO_MSG("Get Code From Target: ~p", [Codes]),
-	Codes.
-
-request_codes_for_target(C2SState, FromItem, Target) ->
+request_conversation_data(C2SState, ConvID, FromID, ToID) ->
 	PostUrl = gen_mod:get_module_opt(C2SState#state.server, ?MODULE, conversation_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
     Sep = "&",
 	Post = [
-	  "login=", url_encode(binary_to_list(FromItem)), Sep,
-	  "to=", url_encode(binary_to_list(Target))
+	  "conv=", url_encode(binary_to_list(ConvID)), Sep,
+	  "from=", url_encode(binary_to_list(FromID)), Sep,
+	  "to=", url_encode(binary_to_list(ToID))
 	],
 	%?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
 	R = httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
-	Codes = case R of
-		{ok, {{Version,ReturnCode, State}, Head, Body}} -> 
+	Result = case R of
+		{ok, {{Version, ReturnCode, State}, Head, Body}} -> 
 			jiffy:decode(Body);
 		{error, Reason} -> 
 			[<<"error">>, <<"error">>]
 	end,
-% store code
-	case Codes of 
-		[<<"error">>, <<"error">>] -> ok;
-		[<<"notfound">>, <<"notfound">>] -> ok;
-		_ -> 
-			store_codes_for_target(C2SState, FromItem, Target, Codes)
-	end,
-	Codes.
-
-store_codes_for_target(C2SState, FromItem, Target, Codes) ->
-	%?INFO_MSG("Store Code \"~p\"", [Codes]),
-	ejabberd_sql:sql_query(C2SState#state.server, [<<"INSERT INTO conversation (username, target_hash, conversation_code, reply_code) VALUES (">>, quote(FromItem), <<", UNHEX(SHA2(">>, quote(Target), <<", 256)), ">>, quote(lists:nth(1, Codes)), <<", ">>, quote(lists:nth(2, Codes)), <<")">>]).
+	Result.
 
 bjoin(List) ->
 	F = fun(A, B) -> <<A/binary, B/binary>> end,
