@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% File    : mod_ringmail.erl
+%%% File	: mod_ringmail.erl
 %%% Author  : Mike Frager <mfrager@dyl.com>
 %%% Purpose : Modificiations needed for RingMail
 %%% Created : 6 Jun 2016 by Mike Frager <mfrager@dyl.com>
@@ -73,7 +73,6 @@
 		ip,
 		aux_fields = [],
 		csi_state = active,
-		csi_queue = [],
 		mgmt_state,
 		mgmt_xmlns,
 		mgmt_queue,
@@ -81,32 +80,35 @@
 		mgmt_pending_since,
 		mgmt_timeout,
 		mgmt_max_timeout,
+		mgmt_ack_timeout,
+		mgmt_ack_timer,
 		mgmt_resend,
 		mgmt_stanzas_in = 0,
 		mgmt_stanzas_out = 0,
+		mgmt_stanzas_req = 0,
 		ask_offline = true,
 		lang = <<"">>}).
 
 start(Host, Opts) ->
-    ?INFO_MSG("Starting mod_ringmail", [] ),
-    register(?PROCNAME,spawn(?MODULE, init, [Host, Opts])),  
-    ok.
+	?INFO_MSG("Starting mod_ringmail", [] ),
+	register(?PROCNAME,spawn(?MODULE, init, [Host, Opts])),  
+	ok.
 
 init(Host, _Opts) ->
-    ejabberd_hooks:add(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
-    ejabberd_hooks:add(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
-    ok.
+	ejabberd_hooks:add(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
+	ejabberd_hooks:add(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
+	ok.
 
 stop(Host) ->
-    ?INFO_MSG("Stopping mod_ringmail", [] ),
-    ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
-    ejabberd_hooks:delete(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
-    ok.
+	?INFO_MSG("Stopping mod_ringmail", [] ),
+	ejabberd_hooks:delete(user_send_packet_to, Host, ?MODULE, on_user_send_packet_to, 10),
+	ejabberd_hooks:delete(user_send_packet_update, Host, ?MODULE, on_user_send_packet_update, 10),
+	ok.
 
 on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
-    %?INFO_MSG("Attrs: ~p", [Attrs]),
-    %?INFO_MSG("XML Element: ~p", [El]),
-    %?INFO_MSG("From: ~p", [From]),
+	?INFO_MSG("Attrs: ~p", [Attrs]),
+	?INFO_MSG("XML Element: ~p", [El]),
+	?INFO_MSG("From: ~p", [From]),
 	ToParts = re:split(To, "\@", [{parts, 2}]),
 	ToID = lists:nth(1, ToParts),
 	Host1 = lists:nth(2, ToParts),
@@ -130,11 +132,11 @@ on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
 
 	% request conversation data
 	ConvData = request_conversation_data(C2SState, ConvID, FromID, ToID, ReplyTo),
-    %?INFO_MSG("Conversation Data: ~p", [ConvData]),
+	%?INFO_MSG("Conversation Data: ~p", [ConvData]),
 	ConvValid = lists:nth(1, ConvData),
 
 	{ToFinal, FromConv, UUID, Contact, OrigTo} = case ConvValid of 
-        <<"ok">> -> {lists:nth(2, ConvData), lists:nth(3, ConvData), lists:nth(4, ConvData), lists:nth(5, ConvData), lists:nth(6, ConvData)};
+		<<"ok">> -> {lists:nth(2, ConvData), lists:nth(3, ConvData), lists:nth(4, ConvData), lists:nth(5, ConvData), lists:nth(6, ConvData)};
 		_ -> {ToID, FromID, <<"">>, <<"">>, <<"">>}
 	end,
 
@@ -148,13 +150,13 @@ on_user_send_packet_to(To, From, C2SState, Attrs, El) ->
 	end,
 	DataList = [UUID, Contact, OrigTo],
 
-    ?INFO_MSG("Receipt:~p OrigFrom:~p OrigTo:~p NewFrom:~p -> NewTo:~p UUID:~p Contact:~p", [Receipt, FromID, ToID, FromFinal, ToFinal, lists:nth(1, DataList), lists:nth(2, DataList)]),
+	?INFO_MSG("Receipt:~p OrigFrom:~p OrigTo:~p NewFrom:~p -> NewTo:~p UUID:~p Contact:~p", [Receipt, FromID, ToID, FromFinal, ToFinal, lists:nth(1, DataList), lists:nth(2, DataList)]),
 	{bjoin([ToFinal, <<"@">>, Host]), jid:from_string(bjoin([FromFinal, <<"@">>, Host])), DataList}.
 
 on_user_send_packet_update(El, DataList) ->
 	Contact = lists:nth(2, DataList),
 	List1 = lists:keystore(<<"conversation">>, 1, El#xmlel.attrs, {<<"conversation">>, lists:nth(1, DataList)}),
-    List2 = case lists:nth(3, DataList) of
+	List2 = case lists:nth(3, DataList) of
 		null -> List1;
 		<<"">> -> List1;
 		_ ->
@@ -166,13 +168,13 @@ on_user_send_packet_update(El, DataList) ->
 		<<"">> -> El1;
 		_ ->
 			List = lists:keystore(<<"contact">>, 1, El1#xmlel.attrs, {<<"contact">>, Contact}),
-    		%?INFO_MSG("Contact Data: ~p", [List]),
+			%?INFO_MSG("Contact Data: ~p", [List]),
 			NewEl = El1#xmlel{attrs=List}
 	end.
 
 request_conversation_data(C2SState, ConvID, FromID, ToID, ReplyTo) ->
 	PostUrl = gen_mod:get_module_opt(C2SState#state.server, ?MODULE, conversation_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
-    Sep = "&",
+	Sep = "&",
 	Post = [
 	  "conv=", url_encode(binary_to_list(ConvID)), Sep,
 	  "from=", url_encode(binary_to_list(FromID)), Sep,
@@ -194,68 +196,68 @@ bjoin(List) ->
 	lists:foldr(F, <<>>, List).
 
 quote(String) when is_list(String) ->
-    [39 | lists:reverse([39 | quote(String, [])])]; %% 39 is $'
+	[39 | lists:reverse([39 | quote(String, [])])]; %% 39 is $'
 quote(Bin) when is_binary(Bin) ->
-    list_to_binary(quote(binary_to_list(Bin))).
+	list_to_binary(quote(binary_to_list(Bin))).
 
 quote([], Acc) ->
-    Acc;
+	Acc;
 quote([0 | Rest], Acc) ->
-    quote(Rest, [$0, $\\ | Acc]);
+	quote(Rest, [$0, $\\ | Acc]);
 quote([10 | Rest], Acc) ->
-    quote(Rest, [$n, $\\ | Acc]);
+	quote(Rest, [$n, $\\ | Acc]);
 quote([13 | Rest], Acc) ->
-    quote(Rest, [$r, $\\ | Acc]);
+	quote(Rest, [$r, $\\ | Acc]);
 quote([$\\ | Rest], Acc) ->
-    quote(Rest, [$\\ , $\\ | Acc]);
-quote([39 | Rest], Acc) ->        %% 39 is $'
-    quote(Rest, [39, $\\ | Acc]); %% 39 is $'
-quote([34 | Rest], Acc) ->        %% 34 is $"
-    quote(Rest, [34, $\\ | Acc]); %% 34 is $"
+	quote(Rest, [$\\ , $\\ | Acc]);
+quote([39 | Rest], Acc) ->		%% 39 is $'
+	quote(Rest, [39, $\\ | Acc]); %% 39 is $'
+quote([34 | Rest], Acc) ->		%% 34 is $"
+	quote(Rest, [34, $\\ | Acc]); %% 34 is $"
 quote([26 | Rest], Acc) ->
-    quote(Rest, [$Z, $\\ | Acc]);
+	quote(Rest, [$Z, $\\ | Acc]);
 quote([C | Rest], Acc) ->
-    quote(Rest, [C | Acc]).
+	quote(Rest, [C | Acc]).
 
 %%% The following url encoding code is from the yaws project and retains it's original license.
 %%% https://github.com/klacke/yaws/blob/master/LICENSE
 %%% Copyright (c) 2006, Claes Wikstrom, klacke@hyber.org
 %%% All rights reserved.
 url_encode([H|T]) when is_list(H) ->
-    [url_encode(H) | url_encode(T)];
+	[url_encode(H) | url_encode(T)];
 url_encode([H|T]) ->
-    if
-        H >= $a, $z >= H ->
-            [H|url_encode(T)];
-        H >= $A, $Z >= H ->
-            [H|url_encode(T)];
-        H >= $0, $9 >= H ->
-            [H|url_encode(T)];
-        H == $_; H == $.; H == $-; H == $/; H == $: -> % FIXME: more..
-            [H|url_encode(T)];
-        true ->
-            case integer_to_hex(H) of
-                [X, Y] ->
-                    [$%, X, Y | url_encode(T)];
-                [X] ->
-                    [$%, $0, X | url_encode(T)]
-            end
-     end;
+	if
+		H >= $a, $z >= H ->
+			[H|url_encode(T)];
+		H >= $A, $Z >= H ->
+			[H|url_encode(T)];
+		H >= $0, $9 >= H ->
+			[H|url_encode(T)];
+		H == $_; H == $.; H == $-; H == $/; H == $: -> % FIXME: more..
+			[H|url_encode(T)];
+		true ->
+			case integer_to_hex(H) of
+				[X, Y] ->
+					[$%, X, Y | url_encode(T)];
+				[X] ->
+					[$%, $0, X | url_encode(T)]
+			end
+	 end;
 
 url_encode([]) ->
-    [].
+	[].
 
 integer_to_hex(I) ->
-    case catch erlang:integer_to_list(I, 16) of
-        {'EXIT', _} -> old_integer_to_hex(I);
-        Int         -> Int
-    end.
+	case catch erlang:integer_to_list(I, 16) of
+		{'EXIT', _} -> old_integer_to_hex(I);
+		Int		 -> Int
+	end.
 
 old_integer_to_hex(I) when I < 10 ->
-    integer_to_list(I);
+	integer_to_list(I);
 old_integer_to_hex(I) when I < 16 ->
-    [I-10+$A];
+	[I-10+$A];
 old_integer_to_hex(I) when I >= 16 ->
-    N = trunc(I/16),
-    old_integer_to_hex(N) ++ old_integer_to_hex(I rem 16).
+	N = trunc(I/16),
+	old_integer_to_hex(N) ++ old_integer_to_hex(I rem 16).
 
